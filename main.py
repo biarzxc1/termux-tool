@@ -4,18 +4,17 @@ import aiohttp
 import re
 import sys
 import threading
+import time
 from rich.console import Console
-from rich.live import Live
 from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
+from rich.live import Live
 
 config = {
   'cookies': [],
   'post': ''
 }
 
-os.system('cls' if os.name == 'nt' else 'clear')
+os.system('clear')
 
 print("\033[92mEnter cookies one by one. Type 'done' when finished.\033[0m")
 while True:
@@ -34,13 +33,13 @@ share_count = int(input("\033[0mSHARE COUNT (per cookie): \033[92m"))
 if not config['post'].startswith('https://'):
   print("Invalid post link")
   sys.exit()
-elif not share_count:
+if not share_count:
   print("No count provided")
   sys.exit()
 
-os.system('cls' if os.name == 'nt' else 'clear')
+os.system('clear')
 
-headers_template = {
+HEADERS = {
   'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36',
   'sec-ch-ua': '"Google Chrome";v="107", "Chromium";v="107", "Not=A?Brand";v="24"',
   'sec-ch-ua-mobile': '?0',
@@ -52,123 +51,146 @@ headers_template = {
   'upgrade-insecure-requests': '1'
 }
 
-# Global counters
-global_lock = threading.Lock()
+# ── Shared state ──────────────────────────────────────────────
+lock = threading.Lock()
 global_success = 0
-global_failed = 0
-cookie_stats = {}
-
-for i, c in enumerate(config['cookies']):
-  cookie_stats[i] = {'success': 0, 'failed': 0, 'status': 'waiting', 'token': ''}
+global_failed  = 0
+cookie_stats   = {
+  i: {'success': 0, 'failed': 0, 'status': 'waiting', 'token': ''}
+  for i in range(len(config['cookies']))
+}
+done_event = threading.Event()
 
 console = Console()
 
+# ── Table builder ─────────────────────────────────────────────
 def build_table():
-  total_target = share_count * len(config['cookies'])
-  table = Table(title=f"[bold cyan]SpamShare - Global: {global_success}/{total_target} | Failed: {global_failed}[/bold cyan]", 
-                border_style="cyan", expand=True)
-  table.add_column("Cookie #", style="bold white", justify="center", width=10)
-  table.add_column("Token Preview", style="dim white", width=20)
-  table.add_column("Success", style="bold green", justify="center", width=10)
-  table.add_column("Failed", style="bold red", justify="center", width=10)
-  table.add_column("Status", justify="center", width=15)
+  total = share_count * len(config['cookies'])
+  table = Table(
+    title=f"[bold cyan]SpamShare  Global: {global_success}/{total}  Failed: {global_failed}[/bold cyan]",
+    border_style="cyan", expand=True
+  )
+  table.add_column("Cookie #",      style="bold white",  justify="center", width=10)
+  table.add_column("Token Preview", style="dim white",   width=22)
+  table.add_column("Success",       style="bold green",  justify="center", width=10)
+  table.add_column("Failed",        style="bold red",    justify="center", width=10)
+  table.add_column("Status",        justify="center",    width=12)
 
-  for i, stats in cookie_stats.items():
-    status_color = {
-      'waiting': 'yellow',
-      'running': 'cyan',
-      'done': 'green',
-      'blocked': 'red',
-      'error': 'red'
-    }.get(stats['status'], 'white')
-
-    token_preview = stats['token'][:15] + '...' if stats['token'] else 'N/A'
+  color_map = {
+    'waiting': 'yellow', 'running': 'cyan',
+    'done':    'green',  'blocked': 'red', 'error': 'red'
+  }
+  for i, s in cookie_stats.items():
+    c = color_map.get(s['status'], 'white')
+    tok = (s['token'][:18] + '...') if s['token'] else 'N/A'
     table.add_row(
-      f"#{i+1}",
-      token_preview,
-      str(stats['success']),
-      str(stats['failed']),
-      f"[{status_color}]{stats['status'].upper()}[/{status_color}]"
+      f"#{i+1}", tok,
+      str(s['success']), str(s['failed']),
+      f"[{c}]{s['status'].upper()}[/{c}]"
     )
   return table
 
-class Share:
-  async def get_token(self, session, cookie):
-    hdrs = headers_template.copy()
-    hdrs['cookie'] = cookie
-    try:
-      async with session.get('https://business.facebook.com/content_management', headers=hdrs) as response:
-        data = await response.text()
-        match = re.search('EAAG(.*?)","', data)
-        if not match:
-          return None, cookie
-        access_token = 'EAAG' + match.group(1)
-        return access_token, cookie
-    except Exception:
-      return None, cookie
-
-  async def share_worker(self, session, token, cookie, cookie_index, live):
-    global global_success, global_failed
-    hdrs = headers_template.copy()
-    hdrs['accept-encoding'] = 'gzip, deflate'
-    hdrs['host'] = 'b-graph.facebook.com'
-    hdrs['cookie'] = cookie
-
-    cookie_stats[cookie_index]['status'] = 'running'
-    cookie_stats[cookie_index]['token'] = token
-
-    while cookie_stats[cookie_index]['success'] < share_count:
-      try:
-        async with session.post(
-          f'https://b-graph.facebook.com/me/feed?link=https://mbasic.facebook.com/{config["post"]}&published=0&access_token={token}',
-          headers=hdrs
-        ) as response:
-          data = await response.json()
-          with global_lock:
-            if 'id' in data:
-              global_success += 1
-              cookie_stats[cookie_index]['success'] += 1
-            else:
-              global_failed += 1
-              cookie_stats[cookie_index]['failed'] += 1
-              cookie_stats[cookie_index]['status'] = 'blocked'
-              live.update(build_table())
-              return
-          live.update(build_table())
-      except Exception:
-        with global_lock:
-          global_failed += 1
-          cookie_stats[cookie_index]['failed'] += 1
-        live.update(build_table())
-
-    cookie_stats[cookie_index]['status'] = 'done'
+# ── Display thread ────────────────────────────────────────────
+def display_loop(live):
+  while not done_event.is_set():
     live.update(build_table())
+    time.sleep(0.3)
+  live.update(build_table())   # final refresh
 
-async def run_cookie(cookie, cookie_index, live):
-  async with aiohttp.ClientSession() as session:
-    share = Share()
-    token, ck = await share.get_token(session, cookie)
-    if not token:
-      cookie_stats[cookie_index]['status'] = 'error'
-      live.update(build_table())
-      return
-    await share.share_worker(session, token, ck, cookie_index, live)
+# ── Per-cookie async worker (runs in its own thread+loop) ─────
+async def run_cookie(cookie, idx):
+  global global_success, global_failed
 
-def thread_runner(cookie, cookie_index, live, loop):
-  asyncio.run_coroutine_threadsafe(run_cookie(cookie, cookie_index, live), loop).result()
+  hdrs = HEADERS.copy()
+  hdrs['cookie'] = cookie
 
-async def main():
-  loop = asyncio.get_event_loop()
-  with Live(build_table(), console=console, refresh_per_second=10) as live:
-    threads = []
-    for i, cookie in enumerate(config['cookies']):
-      t = threading.Thread(target=thread_runner, args=(cookie, i, live, loop))
+  # 1. get token
+  try:
+    async with aiohttp.ClientSession() as session:
+      async with session.get(
+        'https://business.facebook.com/content_management', headers=hdrs
+      ) as resp:
+        text  = await resp.text()
+        match = re.search('EAAG(.*?)","', text)
+        if not match:
+          with lock:
+            cookie_stats[idx]['status'] = 'error'
+          return
+        token = 'EAAG' + match.group(1)
+
+    with lock:
+      cookie_stats[idx]['token']  = token
+      cookie_stats[idx]['status'] = 'running'
+
+    # 2. share loop — no sleep, no delay
+    share_hdrs = HEADERS.copy()
+    share_hdrs.update({
+      'accept-encoding': 'gzip, deflate',
+      'host':   'b-graph.facebook.com',
+      'cookie': cookie
+    })
+
+    connector = aiohttp.TCPConnector(limit=0)
+    async with aiohttp.ClientSession(connector=connector) as session:
+      while True:
+        with lock:
+          done = cookie_stats[idx]['success'] >= share_count
+        if done:
+          break
+
+        try:
+          async with session.post(
+            f'https://b-graph.facebook.com/me/feed'
+            f'?link=https://mbasic.facebook.com/{config["post"]}'
+            f'&published=0&access_token={token}',
+            headers=share_hdrs
+          ) as resp:
+            data = await resp.json(content_type=None)
+            with lock:
+              if 'id' in data:
+                global_success               += 1
+                cookie_stats[idx]['success'] += 1
+              else:
+                global_failed               += 1
+                cookie_stats[idx]['failed'] += 1
+                cookie_stats[idx]['status'] = 'blocked'
+                return
+        except Exception:
+          with lock:
+            global_failed               += 1
+            cookie_stats[idx]['failed'] += 1
+
+    with lock:
+      cookie_stats[idx]['status'] = 'done'
+
+  except Exception as e:
+    with lock:
+      cookie_stats[idx]['status'] = 'error'
+
+def thread_entry(cookie, idx):
+  """Each cookie runs its own event loop — safe in Termux."""
+  asyncio.run(run_cookie(cookie, idx))
+
+# ── Main ──────────────────────────────────────────────────────
+def main():
+  threads = [
+    threading.Thread(target=thread_entry, args=(ck, i), daemon=True)
+    for i, ck in enumerate(config['cookies'])
+  ]
+
+  with Live(build_table(), console=console, refresh_per_second=0) as live:
+    disp = threading.Thread(target=display_loop, args=(live,), daemon=True)
+    disp.start()
+
+    for t in threads:
       t.start()
-      threads.append(t)
     for t in threads:
       t.join()
 
-  total_target = share_count * len(config['cookies'])
-  print(f"\n\033[32m[*] \033[0mAll done! Global shares: {global_success}/{total_target}")
+    done_event.set()
+    disp.join()
 
-asyncio.run(main())
+  total = share_count * len(config['cookies'])
+  print(f"\n\033[32m[✓]\033[0m Done! {global_success}/{total} shares sent.")
+
+main()
