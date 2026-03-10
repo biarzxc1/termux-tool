@@ -69,7 +69,12 @@ class Share:
     headers['cookie'] = config['cookies']
     async with session.get('https://business.facebook.com/content_management', headers=headers) as response:
       data = await response.text()
-      access_token = 'EAAG' + re.search('EAAG(.*?)","', data).group(1)
+      match = re.search('EAAG(.*?)","', data)
+      if not match:
+        print("\033[31m[!] Failed to get access token. Your cookie may be expired or invalid.\033[0m")
+        print("\033[33m[*] Please get a fresh cookie and try again.\033[0m")
+        sys.exit()
+      access_token = 'EAAG' + match.group(1)
       return access_token, headers['cookie']
 
 
