@@ -7,21 +7,96 @@ import base64
 import secrets
 import json
 import re
+import struct
 import pyotp
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+
+def encrypt_password(password: str, pub_key_b64: str, key_id: int) -> str:
+    """
+    Encrypt password using Facebook's encryption scheme (version 5).
+    Returns: #PWD_BROWSER:5:{timestamp}:{base64_encoded_payload}
+    """
+    timestamp = int(time.time())
+
+    # Decode the public key
+    pub_key_bytes = base64.b64decode(pub_key_b64)
+    pub_key = load_pem_public_key(
+        b"-----BEGIN PUBLIC KEY-----\n" +
+        base64.b64encode(pub_key_bytes) +
+        b"\n-----END PUBLIC KEY-----\n"
+    )
+
+    # Generate random AES-256 key and IV
+    aes_key = secrets.token_bytes(32)
+    iv = secrets.token_bytes(12)
+
+    # Encrypt the AES key with RSA PKCS1v15
+    encrypted_aes_key = pub_key.encrypt(aes_key, PKCS1v15())  # 256 bytes
+
+    # Encrypt the password with AES-256-GCM, using timestamp string as AAD
+    aesgcm = AESGCM(aes_key)
+    aad = str(timestamp).encode('utf-8')
+    ciphertext_with_tag = aesgcm.encrypt(iv, password.encode('utf-8'), aad)
+    # AESGCM appends 16-byte tag at end
+    ciphertext = ciphertext_with_tag[:-16]
+    tag = ciphertext_with_tag[-16:]
+
+    # Build payload:
+    # 1 byte version + 1 byte key_id + 2 bytes pub_key_id (LE) +
+    # 256 bytes encrypted_aes_key + 12 bytes IV + ciphertext + 16 bytes tag
+    payload = struct.pack('<BBH', 1, key_id, 0) + \
+              encrypted_aes_key + iv + ciphertext + tag
+
+    encoded = base64.b64encode(payload).decode('utf-8')
+    return f"#PWD_BROWSER:5:{timestamp}:{encoded}"
+
+
+def fetch_fb_pubkey(session):
+    """Fetch Facebook's current public key and key_id."""
+    try:
+        resp = session.get(
+            'https://www.facebook.com/ajax/login/public_key/?cid=0',
+            timeout=10
+        )
+        data = resp.json()
+        pub_key_b64 = data.get('public_key') or data.get('publicKey')
+        key_id = int(data.get('key_id') or data.get('keyId') or 0)
+        return pub_key_b64, key_id
+    except Exception as e:
+        print(f"Failed to fetch public key: {e}")
+        return None, None
 
 
 class API:
     def __init__(self, uid, password, twofa_code):
         self.uid = uid
-        self.password = password
+        self.raw_password = password
         self.twofa_code = twofa_code
         self.device_id = str(uuid.uuid4())
-        self.machine_id = ''.join(random.choices(string.ascii_lowercase + string.ascii_uppercase + string.digits, k=24))
-        self.data_ = {"challenge_nonce": base64.b64encode(secrets.token_bytes(32)).decode('utf-8'),"username":f"{uid}"}
-        self.nonce_b64 = base64.b64encode(json.dumps(self.data_).encode('utf-8')).decode('utf-8')
+        self.machine_id = ''.join(random.choices(
+            string.ascii_lowercase + string.ascii_uppercase + string.digits, k=24))
+        self.data_ = {
+            "challenge_nonce": base64.b64encode(secrets.token_bytes(32)).decode('utf-8'),
+            "username": f"{uid}"
+        }
+        self.nonce_b64 = base64.b64encode(
+            json.dumps(self.data_).encode('utf-8')).decode('utf-8')
         self.hni = random.choice(['45201', '45204', '45202'])
-
         self.req = self.sessi()
+
+        # Encrypt password using Facebook's public key
+        pub_key_b64, key_id = fetch_fb_pubkey(self.req)
+        if pub_key_b64:
+            self.password = encrypt_password(self.raw_password, pub_key_b64, key_id)
+            print(f"[+] Password encrypted successfully (key_id={key_id})")
+        else:
+            # Fallback: send plain (will likely fail but try anyway)
+            self.password = self.raw_password
+            print("[!] Warning: Could not fetch public key, sending plain password")
 
     def sessi(self):
         ses = requests.Session()
@@ -86,7 +161,6 @@ class API:
                 if context_match:
                     two_step_verification_context = context_match.group(0).replace('\\', '')
                     print(f"2FA context: {two_step_verification_context}")
-
                     totp = pyotp.TOTP(self.twofa_code).now()
                     print(f"TOTP code: {totp}")
                     twofa_data = self.twofacode(totp, two_step_verification_context)
