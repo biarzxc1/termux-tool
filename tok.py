@@ -1,7 +1,6 @@
 import requests
 import uuid
 import time
-import encpass
 import random
 import string
 import base64
@@ -10,19 +9,6 @@ import json
 import re
 import pyotp
 
-# uid = "61581248120082"
-# password = encpass.encrypt_password("VLteam19092025")
-# device_id = str(uuid.uuid4())
-# machine_id = ''.join(random.choices(string.ascii_lowercase + string.ascii_uppercase + string.digits, k=24))
-# print(machine_id)
-# data_ = {"challenge_nonce": base64.b64encode(secrets.token_bytes(32)).decode('utf-8'),"username":f"{uid}"}
-# nonce_b64 = base64.b64encode(json.dumps(data_).encode('utf-8')).decode('utf-8')
-# hni = random.choice(['45201', '45204', '45202'])
-
-
-
-# open("response.json", "w").write(response)
-# print(response)
 
 class API:
     def __init__(self, uid, password, twofa_code):
@@ -50,7 +36,6 @@ class API:
             'X-Zero-F-Device-Id': self.device_id,
             'X-Fb-Integrity-Machine-Id': self.machine_id,
             'X-Graphql-Request-Purpose': 'fetch',
-            # 'X-Fb-Device-Group': '6170',
             'X-Tigon-Is-Retry': 'False',
             'X-Graphql-Client-Library': 'graphservice',
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -62,16 +47,14 @@ class API:
             'App-Scope-Id-Header': self.device_id,
             'X-Fb-Connection-Type': 'WIFI',
             'X-Meta-Usdid': f"{str(uuid.uuid4())}.{int(time.time())}.{''.join(random.choices(string.ascii_letters + string.digits, k=100))}",
-            # 'Accept-Encoding': 'gzip, deflate',
             'X-Fb-Http-Engine': 'Tigon/Liger',
             'X-Fb-Client-Ip': 'True',
             'X-Fb-Server-Cluster': 'True',
             'X-Fb-Conn-Uuid-Client': secrets.token_hex(32 // 2),
-            # 'Content-Length': '9057',
         }
         ses.headers.update(headers)
         return ses
-        
+
     def login(self):
         data = {
             'method': 'post',
@@ -97,13 +80,13 @@ class API:
             if eaau_match:
                 eaau = eaau_match.group(0)
                 return eaau
-        
+
             if 'two_step_verification' in full_text.lower() or 'two_fac' in full_text or 'redirect_two_fac' in full_text:
                 context_match = re.search(r'AW[^"]{200,}', full_text)
                 if context_match:
                     two_step_verification_context = context_match.group(0).replace('\\', '')
                     print(f"2FA context: {two_step_verification_context}")
-        
+
                     totp = pyotp.TOTP(self.twofa_code).now()
                     print(f"TOTP code: {totp}")
                     twofa_data = self.twofacode(totp, two_step_verification_context)
@@ -114,8 +97,6 @@ class API:
         except Exception as e:
             print("Login failed:1, error:", str(e))
             return None
-            # twofa = re.match(r'AW\w+', json.loads(json.loads(data)['data']['fb_bloks_action']['root_action']['action']['action_bundle']['bloks_bundle_action'])['layout']['bloks_payload']['action']).group(0)
-
 
     def twofacode(self, code, two_step_verification_context):
         data = {
@@ -135,9 +116,6 @@ class API:
         }
 
         response = self.req.post('https://b-graph.facebook.com/graphql', data=data)
-        # print(response.json())
-        # print(response.headers)
-        # return response.json()
         try:
             full_text = json.dumps(response.json(), ensure_ascii=False)
             eaau_match = re.search(r'EAAAAU[a-zA-Z0-9_-]{100,}', full_text)
@@ -147,10 +125,11 @@ class API:
         except Exception as e:
             print("Login failed:2, error:", str(e))
             return None
-        
+
+
 if __name__ == "__main__":
     uid = "61585015900971"
-    password = encpass.encrypt_password("XaneKath1")
+    password = "09944954574"
     twofa_code = "2SDT4FCWAO33MPQEIP76GKJO6U44BKVI"
     api = API(uid, password, twofa_code)
     print(api.login())
