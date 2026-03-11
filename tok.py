@@ -129,7 +129,7 @@ class API:
 
 if __name__ == "__main__":
     uid = "61585015900971"
-    password = "09944954574"
+    password = "XaneKath1"
     twofa_code = "2SDT4FCWAO33MPQEIP76GKJO6U44BKVI"
     api = API(uid, password, twofa_code)
     print(api.login())
